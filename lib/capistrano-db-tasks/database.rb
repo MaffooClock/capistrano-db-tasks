@@ -17,15 +17,16 @@ module Database
 
     def credentials
       credential_params = ""
-      username = @config['username'] || @config['user']
 
       if mysql?
+        username = @config['username'] || @config['user']
         credential_params << " -u #{username} " if username
         credential_params << " -p'#{@config['password']}' " if @config['password']
         credential_params << " -h #{@config['host']} " if @config['host']
         credential_params << " -S #{@config['socket']} " if @config['socket']
         credential_params << " -P #{@config['port']} " if @config['port']
       elsif postgresql?
+        username = @config['superuser-name'] || @config['username']
         credential_params << " -U #{username} " if username
         credential_params << " -h #{@config['host']} " if @config['host']
         credential_params << " -p #{@config['port']} " if @config['port']
@@ -43,7 +44,8 @@ module Database
     end
 
     def output_file
-      @output_file ||= "db/#{database}_#{current_time}.sql.#{compressor.file_extension}"
+      #@output_file ||= "db/#{database}_#{current_time}.sql.#{compressor.file_extension}"
+      @output_file ||= "db/#{database}_#{current_time}.sql.tar.#{compressor.file_extension}"
     end
 
     def compressor
@@ -57,14 +59,16 @@ module Database
   private
 
     def pgpass
-      @config['password'] ? "PGPASSWORD='#{@config['password']}'" : ""
+      password = @config['superuser-password'] || @config['password']
+      password ? "PGPASSWORD='#{password}'" : ""
     end
 
     def dump_cmd
       if mysql?
         "mysqldump #{credentials} #{database} #{dump_cmd_opts}"
       elsif postgresql?
-        "#{pgpass} pg_dump #{credentials} #{database} #{dump_cmd_opts}"
+        #"#{pgpass} pg_dump #{credentials} #{database} #{dump_cmd_opts}"
+        "#{pgpass} pg_dump #{credentials} '#{database}' #{dump_cmd_opts}"
       end
     end
 
@@ -73,7 +77,18 @@ module Database
         "mysql #{credentials} -D #{database} < #{file}"
       elsif postgresql?
         terminate_connection_sql = "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '#{database}' AND pid <> pg_backend_pid();"
-        "#{pgpass} psql -c \"#{terminate_connection_sql};\" #{credentials}; #{pgpass} dropdb #{credentials} #{database}; #{pgpass} createdb #{credentials} #{database}; #{pgpass} psql #{credentials} -d #{database} < #{file}"
+        #"#{pgpass} psql -c \"#{terminate_connection_sql};\" #{credentials}; #{pgpass} dropdb #{credentials} #{database}; #{pgpass} createdb #{credentials} #{database}; #{pgpass} psql #{credentials} -d #{database} < #{file}"
+        commands = [
+            %Q[ #{pgpass} psql #{credentials} -c "#{terminate_connection_sql}" ],
+            %Q[ #{pgpass} dropdb #{credentials} '#{database}' ],
+            %Q[ #{pgpass} createdb #{credentials} -O '#{@config['username']}' '#{database}' ],
+            %Q[ #{pgpass} pg_restore #{credentials} --if-exists --clean --disable-triggers -d '#{database}' #{file} ],
+            %Q[ #{pgpass} psql #{credentials} -d '#{database}' -c 'GRANT ALL ON SCHEMA public TO public;' ]
+        ].join(' && ')
+
+        #@cap.info "Import: #{commands}"
+
+        commands
       end
     end
 
@@ -81,7 +96,7 @@ module Database
       if mysql?
         "--lock-tables=false #{dump_cmd_ignore_tables_opts} #{dump_cmd_ignore_data_tables_opts}"
       elsif postgresql?
-        "--no-acl --no-owner #{dump_cmd_ignore_tables_opts} #{dump_cmd_ignore_data_tables_opts}"
+        "--clean --if-exists --format=tar --no-acl --no-owner #{dump_cmd_ignore_tables_opts} #{dump_cmd_ignore_data_tables_opts}"
       end
     end
 
